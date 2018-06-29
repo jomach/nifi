@@ -17,15 +17,15 @@
 
 package org.apache.nifi.reporting;
 
+import org.apache.avro.Schema;
 import org.apache.nifi.annotation.behavior.Restricted;
 import org.apache.nifi.annotation.behavior.Restriction;
-import org.apache.nifi.annotation.behavior.Stateful;
 import org.apache.nifi.annotation.configuration.DefaultSchedule;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
+import org.apache.nifi.avro.AvroTypeUtil;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.RequiredPermission;
-import org.apache.nifi.components.state.Scope;
 import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
@@ -39,8 +39,9 @@ import javax.json.JsonArrayBuilder;
 import javax.json.JsonBuilderFactory;
 import javax.json.JsonObject;
 import javax.json.JsonObjectBuilder;
+
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -57,7 +58,6 @@ import java.util.concurrent.TimeUnit;
 @CapabilityDescription("Publishes Bulletin events using the Site To Site protocol. Note: only up to 5 bulletins are stored per component and up to "
         + "10 bulletins at controller level for a duration of up to 5 minutes. If this reporting task is not scheduled frequently enough some bulletins "
         + "may not be sent.")
-@Stateful(scopes = Scope.LOCAL, description = "Stores the Reporting Task's last bulletin ID so that on restart the task knows where it left off.")
 @Restricted(
         restrictions = {
                 @Restriction(
@@ -79,6 +79,11 @@ public class SiteToSiteBulletinReportingTask extends AbstractSiteToSiteReporting
 
     private volatile long lastSentBulletinId = -1L;
 
+    public SiteToSiteBulletinReportingTask() throws IOException {
+        final InputStream schema = getClass().getClassLoader().getResourceAsStream("schema-bulletins.avsc");
+        recordSchema = AvroTypeUtil.createSchema(new Schema.Parser().parse(schema));
+    }
+
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
         final List<PropertyDescriptor> properties = new ArrayList<>(super.getSupportedPropertyDescriptors());
@@ -96,19 +101,6 @@ public class SiteToSiteBulletinReportingTask extends AbstractSiteToSiteReporting
             getLogger().debug("This instance of NiFi is configured for clustering, but the Cluster Node Identifier is not yet available. "
                 + "Will wait for Node Identifier to be established.");
             return;
-        }
-
-        if (lastSentBulletinId < 0) {
-            Map<String, String> state;
-            try {
-                state = context.getStateManager().getState(Scope.LOCAL).toMap();
-            } catch (IOException e) {
-                getLogger().error("Failed to get state at start up due to:" + e.getMessage(), e);
-                return;
-            }
-            if (state.containsKey(LAST_EVENT_ID_KEY)) {
-                lastSentBulletinId = Long.parseLong(state.get(LAST_EVENT_ID_KEY));
-            }
         }
 
         final BulletinQuery bulletinQuery = new BulletinQuery.Builder().after(lastSentBulletinId).build();
@@ -169,8 +161,7 @@ public class SiteToSiteBulletinReportingTask extends AbstractSiteToSiteReporting
             attributes.put("reporting.task.type", this.getClass().getSimpleName());
             attributes.put("mime.type", "application/json");
 
-            final byte[] data = jsonArray.toString().getBytes(StandardCharsets.UTF_8);
-            transaction.send(data, attributes);
+            sendData(context, transaction, attributes, jsonArray);
             transaction.confirm();
             transaction.complete();
 
@@ -179,14 +170,6 @@ public class SiteToSiteBulletinReportingTask extends AbstractSiteToSiteReporting
                     new Object[]{bulletins.size(), transferMillis, transactionId, bulletins.get(0).getId()});
         } catch (final IOException e) {
             throw new ProcessException("Failed to send Bulletins to destination due to IOException:" + e.getMessage(), e);
-        }
-
-        // Store the id of the last event so we know where we left off
-        try {
-            context.getStateManager().setState(Collections.singletonMap(LAST_EVENT_ID_KEY, String.valueOf(currMaxId)), Scope.LOCAL);
-        } catch (final IOException ioe) {
-            getLogger().error("Failed to update state to {} due to {}; this could result in events being re-sent after a restart.",
-                    new Object[]{currMaxId, ioe.getMessage()}, ioe);
         }
 
         lastSentBulletinId = currMaxId;

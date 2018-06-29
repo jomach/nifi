@@ -1010,6 +1010,15 @@ public interface NiFiServiceFacade {
     void verifyScheduleComponents(String processGroupId, ScheduledState state, Set<String> componentIds);
 
     /**
+     * Verifies the contents of the specified process group can be enabled or disabled.
+     *
+     * @param processGroupId the ProcessGroup id
+     * @param state scheduled state
+     * @param componentIds the components
+     */
+    void verifyEnableComponents(String processGroupId, ScheduledState state, Set<String> componentIds);
+
+    /**
      * Verifies the controller services with the given ID's can be enabled or disabled
      *
      * @param processGroupId the ID of the process group
@@ -1027,6 +1036,8 @@ public interface NiFiServiceFacade {
      * @return snapshot
      */
     ActivateControllerServicesEntity activateControllerServices(String processGroupId, ControllerServiceState state, Map<String, Revision> serviceRevisions);
+
+    ScheduleComponentsEntity enableComponents(String processGroupId, ScheduledState state, Map<String, Revision> componentRevisions);
 
     /**
      * Schedules all applicable components under the specified ProcessGroup on behalf of the currently logged in user.

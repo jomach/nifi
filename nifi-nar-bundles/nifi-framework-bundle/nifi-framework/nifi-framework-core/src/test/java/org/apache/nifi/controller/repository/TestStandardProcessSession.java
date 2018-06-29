@@ -38,6 +38,7 @@ import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -73,6 +74,7 @@ import org.apache.nifi.flowfile.attributes.CoreAttributes;
 import org.apache.nifi.groups.ProcessGroup;
 import org.apache.nifi.processor.FlowFileFilter;
 import org.apache.nifi.processor.FlowFileFilter.FlowFileFilterResult;
+import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.FlowFileAccessException;
 import org.apache.nifi.processor.exception.MissingFlowFileException;
@@ -326,6 +328,44 @@ public class TestStandardProcessSession {
         }
 
         assertArrayEquals(replacementContent, buffer);
+    }
+
+    @Test
+    public void testEmbeddedReads() {
+        FlowFile ff1 = session.write(session.create(), out -> out.write(new byte[] {'A', 'B'}));
+        FlowFile ff2 = session.write(session.create(), out -> out.write('C'));
+
+        session.read(ff1, in1 -> {
+            int a = in1.read();
+            assertEquals('A', a);
+
+            session.read(ff2, in2 -> {
+                int c = in2.read();
+                assertEquals('C', c);
+            });
+
+            int b = in1.read();
+            assertEquals('B', b);
+        });
+    }
+
+    @Test
+    public void testSequentialReads() throws IOException {
+        FlowFile ff1 = session.write(session.create(), out -> out.write(new byte[] {'A', 'B'}));
+        FlowFile ff2 = session.write(session.create(), out -> out.write('C'));
+
+        final byte[] buff1 = new byte[2];
+        try (final InputStream in = session.read(ff1)) {
+            StreamUtils.fillBuffer(in, buff1);
+        }
+
+        final byte[] buff2 = new byte[1];
+        try (final InputStream in = session.read(ff2)) {
+            StreamUtils.fillBuffer(in, buff2);
+        }
+
+        Assert.assertArrayEquals(new byte[] {'A', 'B'}, buff1);
+        Assert.assertArrayEquals(new byte[] {'C'}, buff2);
     }
 
     @Test
@@ -1174,6 +1214,36 @@ public class TestStandardProcessSession {
         });
 
         assertEquals("Hello, World", new String(buff));
+    }
+
+    @Test
+    public void testAppendToFlowFileWhereResourceClaimHasMultipleContentClaims() throws IOException {
+        final Relationship relationship = new Relationship.Builder().name("A").build();
+
+        FlowFile ffa = session.create();
+        ffa = session.write(ffa, (out) -> out.write('A'));
+        session.transfer(ffa, relationship);
+
+        FlowFile ffb = session.create();
+        ffb = session.write(ffb, (out) -> out.write('B'));
+        session.transfer(ffb, relationship);
+        session.commit();
+
+        final ProcessSession newSession = new StandardProcessSession(context, () -> false);
+        FlowFile toUpdate = newSession.get();
+        newSession.append(toUpdate, out -> out.write('C'));
+
+        // Read the content back and ensure that it is correct
+        final byte[] buff;
+        try (final ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            newSession.read(toUpdate, in -> StreamUtils.copy(in, baos));
+            buff = baos.toByteArray();
+        }
+
+        final String output = new String(buff, StandardCharsets.UTF_8);
+        assertEquals("AC", output);
+        newSession.transfer(toUpdate);
+        newSession.commit();
     }
 
     @Test
